@@ -4,8 +4,10 @@
   "description": "Existing-session connectivity experiment for a narrated screen capture companion",
   "main": "index.js",
   "scripts": {
-    "test": "node --test probe.test.mjs",
-    "probe": "node probe.mjs"
+    "test": "node --test *.test.mjs",
+    "probe": "node probe.mjs",
+    "record": "node record.mjs",
+    "build:capture": "bash scripts/build-capture.sh"
   },
   "keywords": [],
   "author": "",
@@ -16,7 +18,8 @@
   },
   "private": true,
   "bin": {
-    "copilot-walkthrough": "./probe.mjs"
+    "copilot-walkthrough": "./probe.mjs",
+    "walkthrough-record": "./record.mjs"
   },
   "engines": {
     "node": ">=22"

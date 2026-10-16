@@ -5,3 +5,8 @@ node_modules/
 captures/
 *.log
 .DS_Store
+
+.build/
+.local/
+.swiftpm/
+evidence/
