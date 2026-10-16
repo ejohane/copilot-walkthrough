@@ -10,7 +10,7 @@ export function options(args) {
   const command = positionals[0] ?? 'help';
   if (values.help || command === 'help') return { command: 'help' };
   if (!['list', 'send'].includes(command)) throw new Error('Use list or send.');
-  if (!values.url) throw new Error('--url must identify the existing runtime; no new runtime is spawned.');
+  if (command === 'list' && !values.url) throw new Error('list requires --url.');
   if (command === 'send' && (!values.session || !values.message?.trim()))
     throw new Error('send requires --session and --message.');
   return { command, ...values };
@@ -19,7 +19,7 @@ export function options(args) {
 export async function run(args, injectedSdk) {
   const config = options(args);
   if (config.command === 'help') {
-    console.log('Copilot walkthrough connection probe\n\nnode probe.mjs list --url <runtime-endpoint>\nnode probe.mjs send --url <runtime-endpoint> --session <id> --message "Reply with WALKTHROUGH_OK"\n\nAdd --dry-run to validate without connecting. Optional COPILOT_CONNECTION_TOKEN supplies runtime authentication.');
+    console.log('Copilot walkthrough connection probe\n\nnode probe.mjs list --url <runtime-endpoint>\nnode probe.mjs send --session <id> --message "Reply with WALKTHROUGH_OK"\n\nAdd --dry-run to validate without connecting. Without --url, the SDK starts a local runtime using your Copilot credentials and session storage. Optional --url connects to an existing runtime; COPILOT_CONNECTION_TOKEN supplies its authentication.');
     return;
   }
   if (config['dry-run']) {
@@ -27,22 +27,22 @@ export async function run(args, injectedSdk) {
     return;
   }
   const { CopilotClient, RuntimeConnection } = injectedSdk ?? await import('@github/copilot-sdk');
-  const client = new CopilotClient({ connection: RuntimeConnection.forUri(config.url, {
+  const client = new CopilotClient(config.url ? { connection: RuntimeConnection.forUri(config.url, {
     connectionToken: process.env.COPILOT_CONNECTION_TOKEN
-  }) });
+  }) } : {});
   let session;
   try {
     await client.start();
-    const sessions = await client.listSessions();
     if (config.command === 'list') {
+      const sessions = await client.listSessions();
       console.log(JSON.stringify(sessions, null, 2));
       return;
     }
-    if (!sessions.some(s => s.sessionId === config.session))
-      throw new Error('Requested session is not listed by this runtime. No message sent.');
     session = await client.resumeSession(config.session, {
+      allowTranscriptRecovery: false,
       onPermissionRequest: () => ({ kind: 'denied-interactively-by-user' })
     });
+    console.log(`Target session: ${session.sessionId ?? config.session}`);
     console.log('Sending probe. SDK receipt does not confirm visibility in the app.');
     const response = await session.sendAndWait({ prompt: config.message, mode: 'enqueue' }, 30000);
     console.log(response?.data?.content ?? 'Session became idle without a final assistant message.');
