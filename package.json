@@ -14,5 +14,11 @@
   "dependencies": {
     "@github/copilot-sdk": "1.0.22"
   },
-  "private": true
+  "private": true,
+  "bin": {
+    "copilot-walkthrough": "./probe.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
 }
