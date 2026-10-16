@@ -1,5 +1,7 @@
 # Copilot walkthrough: first integration experiment
 
+Start with [Vision and approach](docs/vision-and-approach.md) for product context, implementation phases, and the next Codex session's handoff instructions.
+
 This is a connection probe, not yet a screen recorder. It tests the riskiest assumption: whether an external process can send context to the runtime owning your existing Copilot conversation and whether that conversation displays the result.
 
 ## Run locally
