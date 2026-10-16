@@ -2,38 +2,59 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { options, run } from './probe.mjs';
 
-test('requires an explicit runtime and target; never falls back to a fresh session', () => {
-  assert.throws(() => options(['list']), /--url/);
-  assert.throws(() => options(['send', '--url', 'localhost:4321']), /--session/);
+test('send requires session and nonempty message; endpoint is optional', () => {
+  assert.throws(() => options(['send']), /--session/);
+  assert.throws(() => options(['send', '--session', 'chosen', '--message', ' ']), /--message/);
+  assert.equal(options(['send', '--session', 'chosen', '--message', 'hello']).session, 'chosen');
 });
 
-test('dry run does not touch the SDK', async () => {
-  await run(['list', '--url', 'localhost:4321', '--dry-run'], {});
+test('dry run does not load or connect to SDK', async () => {
+  await run(['send', '--session', 'chosen', '--message', 'hello', '--dry-run'], {});
 });
 
-test('unknown session is rejected and connection cleaned up', async () => {
-  let stopped = false;
-  const sdk = { RuntimeConnection: { forUri: () => ({}) }, CopilotClient: class {
-    async start() {} async listSessions() { return []; }
-    async resumeSession() { assert.fail('must not resume'); }
-    async stop() { stopped = true; }
-  }};
-  await assert.rejects(run(['send', '--url', 'localhost:4321', '--session', 'missing', '--message', 'hello'], sdk), /not listed/);
-  assert.equal(stopped, true);
-});
-
-test('sends to selected session and cleans up after a failed send', async () => {
-  const calls = [];
-  const sdk = { RuntimeConnection: { forUri: () => ({}) }, CopilotClient: class {
-    async start() {} async listSessions() { return [{ sessionId: 'chosen' }]; }
-    async resumeSession(id, config) {
-      assert.equal(id, 'chosen');
-      assert.equal(config.onPermissionRequest().kind, 'denied-interactively-by-user');
-      return { async sendAndWait(message) { calls.push(message); throw new Error('offline'); },
-        async disconnect() { calls.push('disconnect'); } };
+function mockSdk(calls, { missing = false, failSend = false } = {}) {
+  return {
+    RuntimeConnection: { forUri: (uri) => ({ uri }) },
+    CopilotClient: class {
+      constructor(config) { calls.push(['client', config]); }
+      async start() {}
+      async resumeSession(id, config) {
+        calls.push(['resume', id]);
+        assert.equal(config.allowTranscriptRecovery, false);
+        assert.equal(config.onPermissionRequest().kind, 'denied-interactively-by-user');
+        if (missing) throw new Error('session not found');
+        return {
+          sessionId: id,
+          async sendAndWait(message) {
+            calls.push(['send', message]);
+            if (failSend) throw new Error('timeout');
+            return { data: { content: 'OK' } };
+          },
+          async disconnect() { calls.push('disconnect'); }
+        };
+      }
+      async stop() { calls.push('stop'); }
     }
-    async stop() { calls.push('stop'); }
-  }};
-  await assert.rejects(run(['send', '--url', 'localhost:4321', '--session', 'chosen', '--message', 'hello'], sdk), /offline/);
-  assert.deepEqual(calls, [{ prompt: 'hello', mode: 'enqueue' }, 'disconnect', 'stop']);
+  };
+}
+const args = ['send', '--session', 'chosen', '--message', 'hello'];
+
+test('local runtime resumes exact ID and sends exact message', async () => {
+  const calls = [];
+  await run(args, mockSdk(calls));
+  assert.deepEqual(calls, [['client', {}], ['resume', 'chosen'],
+    ['send', { prompt: 'hello', mode: 'enqueue' }], 'disconnect', 'stop']);
+});
+
+test('missing session fails without sending or creating a replacement', async () => {
+  const calls = [];
+  await assert.rejects(run(args, mockSdk(calls, { missing: true })), /not found/);
+  assert.deepEqual(calls, [['client', {}], ['resume', 'chosen'], 'stop']);
+});
+
+test('send failure disconnects and stops external runtime connection', async () => {
+  const calls = [];
+  await assert.rejects(run([...args, '--url', 'localhost:4321'], mockSdk(calls, { failSend: true })), /timeout/);
+  assert.deepEqual(calls[0], ['client', { connection: { uri: 'localhost:4321' } }]);
+  assert.deepEqual(calls.slice(-2), ['disconnect', 'stop']);
 });
