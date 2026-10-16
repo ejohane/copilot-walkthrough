@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import AVFoundation
 
 final class Fixture: NSObject, NSApplicationDelegate {
     var window: NSWindow!
@@ -23,7 +24,7 @@ final class Fixture: NSObject, NSApplicationDelegate {
     }
     func tick() {
         guard let bytes = try? Data(contentsOf: session.appendingPathComponent("manifest.json")), let manifest = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any], let origin = manifest["originUptime"] as? Double else { return }
-        let elapsed = ProcessInfo.processInfo.systemUptime - origin
+        let elapsed = AVAudioTime.seconds(forHostTime: mach_absolute_time()) - origin
         if elapsed >= 9.75 && !changed {
             changed = true
             window.backgroundColor = NSColor(calibratedRed: 0.78, green: 0.33, blue: 0.24, alpha: 1)

@@ -17,7 +17,12 @@ assert.ok(Math.abs(duration - s.duration) < .5);
 const colors = [], artifacts = [];
 for (let i = 0; i < s.frames.length; i++) {
   const f = s.frames[i], end = s.frames[i + 1]?.capturedAt ?? s.duration;
-  assert.ok(f.captureStartedAt <= f.capturedAt && f.capturedAt <= f.captureCompletedAt);
+  if (live) {
+    const nativeTime = f.sourceDisplayHostTime * s.hostTimebase.numerator / s.hostTimebase.denominator / 1e9 - s.originUptime;
+    assert.ok(Math.abs(nativeTime - f.capturedAt) < 0.000001, 'Frame is not tied to native timestamp');
+    assert.ok(f.capturedAt <= f.captureCompletedAt + .020);
+    assert.ok(f.captureCompletedAt <= s.stopRequestedAt + .020, 'Post-stop capture was retained');
+  } else assert.ok(f.captureStartedAt <= f.capturedAt && f.capturedAt <= f.captureCompletedAt);
   assert.equal(f.displayStart, f.capturedAt); assert.equal(f.displayEnd, end);
   const expected = [];
   s.segments.forEach((t, j) => { if (Math.max(t.start, f.capturedAt) < Math.min(t.end, end)) expected.push(j); });
@@ -33,6 +38,20 @@ assert.ok(firstOrange > 0, 'No blue-to-orange visual change');
 assert.ok(s.frames.slice(firstOrange).some(f => f.segmentIds.includes(phraseIndex)), 'Phrase does not overlap a screenshot showing AFTER state; repeat acceptance with phrase spoken at color change');
 let visualChange;
 if (live) {
+  const journal = JSON.parse(await readFile(join(folder, 'audio-timeline.json'), 'utf8'));
+  assert.ok(!journal.error);
+  assert.ok(Math.abs(journal.originHostSeconds - s.originUptime) < 0.000001);
+  let frames = 0;
+  const firstSampleTime = journal.buffers[0].sampleTime;
+  for (const buffer of journal.buffers) {
+    assert.equal(buffer.fileStartFrame, frames);
+    assert.equal(buffer.sampleTime - firstSampleTime, frames, 'Missing or duplicated native audio samples');
+    const hostSeconds = buffer.hostTime * s.hostTimebase.numerator / s.hostTimebase.denominator / 1e9;
+    assert.ok(Math.abs(hostSeconds - buffer.hostSeconds) < .000001);
+    assert.ok(Math.abs(hostSeconds - s.originUptime - frames / journal.sampleRate) <= .020);
+    frames += buffer.frameCount;
+  }
+  assert.ok(Math.abs(frames / journal.sampleRate - duration) < .001);
   visualChange = JSON.parse(await readFile(join(folder, 'visual-change.json'), 'utf8'));
   assert.ok(Math.abs(visualChange.changedAt - 9.75) < .5);
   assert.ok(Math.abs(s.segments[phraseIndex].start - visualChange.changedAt) < 2, 'Speech too far from visual change');

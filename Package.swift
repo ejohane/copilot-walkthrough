@@ -7,5 +7,6 @@ let package = Package(name: "WalkthroughCapture", platforms: [.macOS(.v14)], pro
     .executable(name: "walkthrough-fixture", targets: ["WalkthroughFixture"])
 ], targets: [
     .executableTarget(name: "WalkthroughCapture", linkerSettings: [.unsafeFlags(["-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist", "-Xlinker", info])]),
-    .executableTarget(name: "WalkthroughFixture")
+    .executableTarget(name: "WalkthroughFixture"),
+    .testTarget(name: "WalkthroughCaptureTests", dependencies: ["WalkthroughCapture"])
 ])

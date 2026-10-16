@@ -100,3 +100,7 @@ test('Ctrl-C is forwarded and allows a final native stop event before cleanup', 
   }, { forwardSignals: true });
   assert.deepEqual(types, ['start', 'stop']);
 });
+test('unresponsive capture is terminated with explicit failure and bounded shutdown', async () => {
+  const script = 'process.on("SIGINT",()=>{});console.log(JSON.stringify({type:"start"}));setInterval(()=>{},1000)';
+  await assert.rejects(eventsProcess(process.execPath, ['-e', script], () => {}, { idleTimeoutMs: 100, shutdownGraceMs: 50 }), /stopped responding/);
+});

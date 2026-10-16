@@ -45,7 +45,7 @@ node record.mjs --window WINDOW_ID --interval 5 --duration 30
 
 `--duration 0` (default) records until stopped. `--interval` accepts any finite positive seconds. Default output is `captures/<timestamp>/`. `--out FOLDER` must name a new folder. `--yes` with an explicit `--window` is immediate recording consent for scripted use. Without it the confirmation remains required. EOF on stdin stops, so scripted callers must keep stdin open for the requested duration.
 
-Audio stays in `audio.wav`, including on failure. A stopped capture is saved before transcription starts. Retry a failed transcription without rerecording:
+Original native-rate PCM audio stays in `audio.wav`, including on failure. `audio-timeline.json` journals the exact written buffer offsets, input sample times and host times. macOS `afconvert` creates a separate 16kHz mono `transcription-input.wav`; the original is retained. A stopped capture is saved before transcription starts. Retry a failed transcription without rerecording:
 
 ```sh
 node record.mjs transcribe --out captures/SESSION
@@ -55,9 +55,9 @@ Capture failure saves partial files and `capture_failed`; it cannot silently bec
 
 ## Timing contract
 
-- Microphone audio is scheduled 250ms ahead on `AVAudioRecorder.deviceCurrentTime`, mapped to monotonic system uptime. Session zero is that scheduled start; mapping uncertainty is saved. Wall clock is metadata only.
-- The first screenshot is requested at session start, then at interval ticks. Each JPEG has measured request-start and completion times; `capturedAt` is their midpoint, with acquisition uncertainty of half that bracket. Times are measured, never fabricated from frame index. Frames describe sampled states, not the exact instant of an intervening visual edit.
-- A screenshot represents `[capturedAt, next capturedAt)`. The last ends at the measured audio stop. Speech before the first frame remains in the transcript without being attached to a nonexistent frame. Stop does not add a final screenshot. Missed ticks are skipped.
+- Session zero is the **first actual AVAudioEngine microphone buffer sample** (`AVAudioTime.hostTime`), converted from mach absolute ticks to seconds. Every native buffer records host time, sample time, file offset and frame count. Missing/duplicated sample positions fail capture; host-clock residual above 20ms or no samples for 500ms also fails. Wall clock is metadata only.
+- The first screenshot is requested after the first microphone buffer, then at interval ticks. Each JPEG records the screenshot sample’s **native ScreenCaptureKit `displayTime`** in mach absolute ticks, translated to audio session zero. Request/completion bounds and presentation timestamp are retained separately. No midpoint or frame-index timestamp is used. Pre-session, repeated or out-of-order display timestamps are skipped explicitly in `skippedFrames`; static-window timestamp freshness/cadence still requires live validation. Frames describe sampled states, not the exact instant of an intervening edit.
+- A screenshot represents `[capturedAt, next capturedAt)`. The last ends at the exact retained audio sample count divided by native sample rate. Speech before the first frame remains in the transcript without being attached to a nonexistent frame. Stop does not add a final screenshot. Frames beyond the final audio sample end remain listed in `excludedFrames` and are not associated. Missed ticks are skipped. Native deadline/signal/EOF handlers latch stop time and stop audio independently of pending screen operations. A capture already in flight cannot be cancelled, but its result is discarded after stop. If OS capture hangs, the CLI watchdog fails within the configured interval/duration plus 15 seconds and a five-second shutdown grace; partial files and the stop-time audio journal remain.
 - Dialogue segments use `[start,end)`. Every positive overlap with a frame's display interval is associated. Touching boundaries alone do not overlap; silent frames have empty `segmentIds`; multiple simultaneous segments are preserved. Original segment order is retained.
 - Whisper's segment times are approximate. Direct inference on silence-padded audio proved unreliable in the synthetic test. Jot's energy gate isolates phrases first (100ms blocks, RMS 0.010, 330ms preroll, 900ms silence, minimum 250ms voiced, maximum 12s). Segment offsets are translated into the original session clock. Quiet speech below that fixed gate may be missed; the retained original allows review. Long phrases may overlap in their preroll, and their associations remain explicit.
 - WAV duration must agree with the session clock within 500ms, otherwise transcription fails for inspection. This is an integrity guard, not a claim of 500ms timestamp accuracy.
@@ -67,6 +67,7 @@ Capture failure saves partial files and `capture_failed`; it cannot silently bec
 ```sh
 npm test
 npm run build:capture
+bash scripts/test-native.sh
 ```
 
 The tests cover the preserved probe, timestamps, silence, overlaps, configurable interval, event ordering, capture errors, transcription failure, retained audio, and incomplete-session recovery rejection.
@@ -97,6 +98,6 @@ The runner opens only a controlled native window and selects that window. Type `
 node scripts/verify-session.mjs captures/ACCEPTANCE_SESSION --live
 ```
 
-The live audit additionally checks the fixture's actual monotonic change marker and speech timing, and requires the phrase to overlap an orange screenshot. Inspect/listen to `review.html` before accepting. A successful simulated audit cannot pass for live evidence. See [current verification results](docs/verification.md).
+The fixture marker timestamps the UI mutation request; the JPEG color check verifies its resulting displayed state. The live audit additionally recomputes native host-tick conversions and every audio buffer’s sample continuity, checks the fixture’s monotonic UI-mutation marker and speech timing, and requires the phrase to overlap an orange screenshot. Inspect/listen to `review.html` before accepting. A successful simulated audit cannot pass for live evidence. See [current verification results](docs/verification.md).
 
 [Vision and approach](docs/vision-and-approach.md) remains the longer-term concept; this v0.1 capture-only scope supersedes its initial Copilot integration plan.

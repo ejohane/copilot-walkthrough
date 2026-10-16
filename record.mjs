@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import { promisify } from 'node:util';
+import { execFile } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { readPCM, wavPCM, speechRegions } from './audio.mjs';
@@ -26,20 +28,29 @@ export function options(args) {
   if (v.window && (!/^\d+$/.test(v.window) || Number(v.window) > 4294967295)) throw new Error('window must be an unsigned window ID');
   return { ...v, command, interval, duration };
 }
-export async function eventsProcess(executable, args, onEvent, { input = false, forwardSignals = false } = {}) {
+export async function eventsProcess(executable, args, onEvent, { input = false, forwardSignals = false, idleTimeoutMs = 0, shutdownGraceMs = 5000 } = {}) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(executable, args, { stdio: [input ? 'inherit' : 'pipe', 'pipe', 'inherit'] });
-    let failure; let queue = Promise.resolve();
-    const stop = () => { if (!child.killed) child.kill('SIGINT'); };
+    let failure; let queue = Promise.resolve(); let idleTimer; let shutdownTimer;
+    const stop = () => {
+      if (!child.killed) child.kill('SIGINT');
+      shutdownTimer ??= setTimeout(() => { failure ??= new Error('Capture did not finish after stop; partial files retained'); child.kill('SIGKILL'); }, shutdownGraceMs);
+    };
+    const resetWatchdog = () => {
+      clearTimeout(idleTimer);
+      if (idleTimeoutMs) idleTimer = setTimeout(() => { failure = new Error('Capture stopped responding; partial files retained'); stop(); }, Math.min(idleTimeoutMs, 2147483647));
+    };
+    resetWatchdog();
     if (forwardSignals) { process.on('SIGINT', stop); process.on('SIGTERM', stop); }
     const lines = createInterface({ input: child.stdout });
-    lines.on('line', line => { queue = queue.then(async () => {
+    lines.on('line', line => { resetWatchdog(); queue = queue.then(async () => {
       const event = JSON.parse(line);
       if (event.type === 'error') failure = new Error(event.message);
       await onEvent(event);
     }).catch(error => { failure = error; stop(); }); });
     child.on('error', error => { failure = error; });
     child.on('close', async (code, signal) => {
+      clearTimeout(idleTimer); clearTimeout(shutdownTimer);
       if (forwardSignals) { process.off('SIGINT', stop); process.off('SIGTERM', stop); }
       await queue;
       if (failure || code !== 0) reject(failure ?? new Error(`Capture exited ${code ?? signal}`));
@@ -79,7 +90,9 @@ export async function transcribe(folder, config) {
   try {
     session.transcription = await engineConfig(config);
     const { binary, model } = session.transcription;
-    const pcm = readPCM(await readFile(join(folder, 'audio.wav')));
+    const inputPath = join(folder, 'transcription-input.wav');
+    await promisify(execFile)('/usr/bin/afconvert', ['-f', 'WAVE', '-d', 'LEI16@16000', '-c', '1', join(folder, 'audio.wav'), inputPath]);
+    const pcm = readPCM(await readFile(inputPath));
     session.audioFileDuration = pcm.length / 32000;
     if (Math.abs(session.audioFileDuration - session.duration) > .5) throw new Error('Audio duration differs from session clock by more than 500ms; retained for inspection');
     session.speechRegions = speechRegions(pcm);
@@ -131,16 +144,17 @@ export async function main(args = process.argv.slice(2)) {
   const folder = resolve(c.out ?? join(root, 'captures', new Date().toISOString().replaceAll(':', '-')));
   await mkdir(dirname(folder), { recursive: true, mode: 0o700 });
   await mkdir(folder, { recursive: false, mode: 0o700 });
-  let session = { schemaVersion: 1, status: 'starting', interval: c.interval, audio: 'audio.wav', clock: 'monotonic session-relative seconds; audio scheduled at origin', screenshotTime: 'midpoint of capture request bounds; uncertainty is half request duration', boundary: 'half-open [start,end); first frame begins at actual capture; stop has no extra frame', frames: [], segments: [] };
+  let session = { schemaVersion: 1, status: 'starting', interval: c.interval, audio: 'audio.wav', audioTimeline: 'audio-timeline.json', clock: 'mach absolute seconds; origin is first native microphone sample hostTime', screenshotTime: 'native ScreenCaptureKit displayTime in mach absolute ticks, translated to first microphone sample', boundary: 'half-open [start,end); first frame begins at actual capture; stop has no extra frame', frames: [], segments: [] };
   await saveSession(folder, session);
   console.log(`Recording to ${folder}. Enter or Ctrl-C stops.`);
   try {
     await eventsProcess(helper, ['record', id, String(c.interval), String(c.duration), folder], async e => {
       if (e.type === 'start') { session = { ...session, ...e, status: 'recording' }; delete session.type; }
+      if (e.type === 'skippedFrame') { (session.skippedFrames ??= []).push(e); }
       if (e.type === 'frame') { const { type, ...frame } = e; session.frames.push(frame); }
-      if (e.type === 'stop') { session.duration = e.duration; session.stopRequestedAt = e.stopRequestedAt; session.audioDuration = e.audioDuration; session.captureComplete = true; session.status = 'captured'; session.frames = associate(session.frames, [], session.duration); }
+      if (e.type === 'stop') { session.duration = e.duration; session.stopRequestedAt = e.stopRequestedAt; session.audioDuration = e.audioDuration; session.audioTimeline = e.audioTimeline; session.recordingStoppedAt = e.recordingStoppedAt; session.captureComplete = true; session.status = 'captured'; session.excludedFrames = session.frames.filter(f => f.capturedAt >= session.duration); session.frames = associate(session.frames.filter(f => f.capturedAt < session.duration), [], session.duration); }
       await saveSession(folder, session);
-    }, { input: true, forwardSignals: true });
+    }, { input: true, forwardSignals: true, idleTimeoutMs: Math.min(c.duration > 0 ? c.duration + 15 : Infinity, c.interval + 15) * 1000 });
     if (!session.captureComplete) throw new Error('Capture exited without a stop event');
   } catch (error) { session.status = 'capture_failed'; session.error = error.message; await saveSession(folder, session); throw error; }
   await transcribe(folder, c);
